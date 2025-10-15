@@ -7,7 +7,8 @@ import re
 # CONFIGURATION
 # =============================
 MODEL = "qwen2.5"
-client = ollama.Client(host='http://localhost:11434')  # ✅ Reuse a single client
+MAX_CONTEXT_MESSAGES = 6  # ✅ Limit number of prior messages to reduce VRAM usage
+client = ollama.Client(host='http://localhost:11434')
 
 # =============================
 # SHARED CONTEXTS
@@ -15,10 +16,13 @@ client = ollama.Client(host='http://localhost:11434')  # ✅ Reuse a single clie
 
 PERSONA = """
 # Persona
-Your name is **Sia** from **Company X**, an empathetic and professional debt collection assistant.
-You proactively reach out to customers regarding their overdue payments.
-You start the conversation warmly, explaining why you're contacting them and offering help.
-You understand the stress and challenges that come with debt and aim to provide clear, respectful, and helpful guidance.
+Your name is **Sia**, an empathetic and professional debt collection assistant working for **Company X** — 
+a fintech firm that specializes in ethical, customer-first debt management.
+
+You represent Company X when speaking to customers, 
+and your goal is to turn debt resolution into a positive, supportive experience. 
+You reach out to customers regarding overdue payments, introducing yourself politely, 
+explaining the reason for contact, and offering solutions calmly and clearly.
 """
 
 CUSTOMER_CONTEXT = """
@@ -45,6 +49,43 @@ Solutions Catalogue:
 # HELPER FUNCTIONS
 # =============================
 
+def build_message_history(user_message):
+    """Build a truncated, context-aware chat history to pass to the LLM."""
+    history = [
+        {"role": "system", "content": f"""
+{PERSONA}
+
+# Job
+You work for Company X, a fintech firm offering ethical debt collection services. 
+You are reaching out to the debtor proactively on behalf of Company X.
+
+# Guardrails
+1. Never be impolite, rude, or dismissive.
+2. Never offer financial advice outside the Solutions Catalogue.
+3. Never share personal data or sensitive information.
+4. Always prioritize the customer's well-being.
+5. If unsure, ask for clarification or suggest they speak to a human agent.
+
+{CUSTOMER_CONTEXT}
+{SOLUTIONS_CATALOGUE}
+
+# Goal
+Reach out to the debtor empathetically, acknowledge their situation, 
+and guide them toward a suitable solution from Company X.
+"""}
+    ]
+
+    # ✅ Include only the most recent N messages for VRAM efficiency
+    prior_msgs = st.session_state.messages[-MAX_CONTEXT_MESSAGES:]
+    for msg in prior_msgs:
+        if msg["role"] in ("user", "assistant"):
+            history.append({"role": msg["role"], "content": msg["content"]})
+
+    # Append the latest user message
+    history.append({"role": "user", "content": user_message})
+    return history
+
+
 def stream_chat_response(messages):
     """Stream the chatbot response for faster perceived response."""
     full_reply = ""
@@ -58,43 +99,12 @@ def stream_chat_response(messages):
 
 
 def chatbot_response(user_message):
-    """Generate chatbot response using streaming."""
-    system_prompt = f"""
-{PERSONA}
-
-# Job
-You work for a fintech company offering ethical debt collection services.
-Your task is to reach out first to customers with overdue payments like Atyab Tosif.
-Open the conversation empathetically — introduce yourself, explain the purpose,
-and offer one of the available solutions in a calm, reassuring way.
-
-# Guardrails
-1. Never be impolite, rude, or dismissive.
-2. Never offer financial advice outside the solutions catalogue.
-3. Never share personal data or sensitive information.
-4. Always prioritize the customer's best interests.
-5. If unsure, ask for clarification or suggest they speak to a human agent.
-
-# Environment
-You represent a company improving debt collection experiences
-through empathy, understanding, and professionalism.
-
-{CUSTOMER_CONTEXT}
-{SOLUTIONS_CATALOGUE}
-
-# Goal
-Reach out to the debtor with compassion, acknowledge their situation,
-and guide them to a suitable solution.
-"""
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_message},
-    ]
-
+    """Generate chatbot response using streaming and context."""
+    messages = build_message_history(user_message)
     response = ""
     for chunk in stream_chat_response(messages):
         response += chunk
-        yield chunk  # Stream to UI
+        yield chunk
     return response.strip()
 
 
@@ -125,6 +135,7 @@ You are a human-in-the-loop evaluation agent reviewing a debt collection chatbot
 
 # Persona
 You are compliance-focused, empathetic, and detail-oriented.
+You work at Company X, ensuring its debt collection chatbot (Sia) is safe and compliant.
 
 {CUSTOMER_CONTEXT}
 {SOLUTIONS_CATALOGUE}
@@ -134,7 +145,7 @@ You are compliance-focused, empathetic, and detail-oriented.
 Evaluate the chatbot response below on:
 1. Compliance (legal and ethical)
 2. Tone (empathetic and respectful)
-3. Factuality (accurate use of provided details)
+3. Factuality (accurate, consistent with provided information)
 
 Previous User Message: {previous_user_message or "N/A"}
 Current User Message: {user_message}
@@ -157,22 +168,21 @@ Chatbot Response: {bot_response}
         ],
         options={"temperature": 0.1}
     )
-
     return safe_json_parse(result["message"]["content"])
 
 
 def correction_agent(user_message, bot_response, evaluation, previous_user_message=None):
     """Correct chatbot response if needed."""
     system_prompt = f"""
-You are a correction agent responsible for improving a debt collection chatbot's responses.
+You are a correction agent responsible for improving Company X’s debt collection chatbot responses.
 
 # Persona
 Empathetic, compliant, professional.
+Work for Company X to ensure tone, factuality, and ethics are perfect.
 
 {CUSTOMER_CONTEXT}
 {SOLUTIONS_CATALOGUE}
 """
-
     user_prompt = f"""
 Previous User Message: {previous_user_message or "N/A"}
 Current User Message: {user_message}
@@ -202,6 +212,7 @@ def run_chat_pipeline(user_message, previous_user_message=None):
     """Run chatbot + evaluation + correction."""
     bot_response = ""
     response_placeholder = st.empty()
+
     for chunk in chatbot_response(user_message):
         bot_response += chunk
         response_placeholder.markdown(bot_response)
@@ -211,9 +222,7 @@ def run_chat_pipeline(user_message, previous_user_message=None):
     corrected_response = None
     status = "Safe"
     if evaluation.get("needs_correction", False):
-        corrected_response = correction_agent(
-            user_message, bot_response, evaluation, previous_user_message
-        )
+        corrected_response = correction_agent(user_message, bot_response, evaluation, previous_user_message)
         status = "Corrected"
 
     final_response = corrected_response or bot_response
@@ -232,9 +241,9 @@ def run_chat_pipeline(user_message, previous_user_message=None):
 # STREAMLIT CHAT APP
 # =============================
 
-st.set_page_config(page_title="💬 Fintech Debt Chatbot", layout="centered")
-st.title("💬 Fintech Debt Chatbot Evaluator")
-st.caption("Test the chatbot — every response is evaluated and corrected if needed.")
+st.set_page_config(page_title="💬 Company X Debt Chatbot", layout="centered")
+st.title("💬 Company X Debt Chatbot Evaluator")
+st.caption("Sia — your empathetic debt collection assistant from Company X. Every response is evaluated and corrected if needed.")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -242,27 +251,34 @@ if "messages" not in st.session_state:
 if "last_user_message" not in st.session_state:
     st.session_state.last_user_message = None
 
+# ✅ Auto-initiate conversation (Sia greets first)
+if len(st.session_state.messages) == 0:
+    with st.spinner("Sia is preparing her first message..."):
+        greeting = "Hello Atyab, this is Sia from Company X. I wanted to check in with you regarding your account. I’m here to help make the repayment process as easy as possible. How have things been going lately?"
+        result = run_chat_pipeline(greeting)
+        st.session_state.messages.append({"role": "assistant", "content": result["final_response"]})
+        st.session_state.last_user_message = None
+        st.rerun()
+
 # Display chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Input
+# User input
 if user_input := st.chat_input("Type your message..."):
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
+        with st.spinner("Sia is composing her message..."):
             result = run_chat_pipeline(user_input, st.session_state.last_user_message)
 
             st.markdown("### 🤖 Original Response")
             st.write(result["original_response"])
 
             eval_data = result["evaluation"]
-
-            # ✅ Boolean display instead of scores
             st.markdown("### 📊 Evaluation Summary")
             col1, col2, col3 = st.columns(3)
             col1.metric("Compliance", "✅" if eval_data["compliance_ok"] else "❌")
@@ -275,8 +291,5 @@ if user_input := st.chat_input("Type your message..."):
                 st.markdown("### ✨ Corrected Response")
                 st.write(result["corrected_response"])
 
-    # Save message
-    st.session_state.messages.append(
-        {"role": "assistant", "content": result["final_response"]}
-    )
+    st.session_state.messages.append({"role": "assistant", "content": result["final_response"]})
     st.session_state.last_user_message = user_input
