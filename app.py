@@ -7,7 +7,7 @@ import re
 # CONFIGURATION
 # =============================
 MODEL = "qwen2.5"
-client = ollama.Client()  # ✅ Reuse a single client across all calls
+client = ollama.Client(host='http://localhost:11434')  # ✅ Reuse a single client across all calls
 
 # =============================
 # SHARED CONTEXTS
@@ -30,7 +30,7 @@ Customer details:
 SOLUTIONS_CATALOGUE = """
 Solutions Catalogue:
 1. Payment Plan - Spread the debt over 6 to 12 months with no interest.
-2. Settlement Offer - Pay a lump sum of 70% of the debt to clear it.
+2. Settlement Offer - Pay a lump sum of 70 percent of the debt to clear it.
 3. Financial Counseling - Free advice and budgeting help.
 4. Hardship Program - Temporary payment deferral up to 3 months.
 5. Automatic Payments - Set up automatic monthly payments.
